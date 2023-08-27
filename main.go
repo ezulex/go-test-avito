@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
@@ -22,9 +23,15 @@ type Segment struct {
 }
 
 type UserSegments struct {
-	ID       int      `json:"id"`
-	UserID   int      `json:"user-id"`
-	Segments []string `json:"segments"`
+	ID                int      `json:"id"`
+	UserID            int      `json:"user-id"`
+	Segments          []string `json:"segments"`
+	SegmentsForDelete []string `json:"segments-for-delete"`
+}
+
+type UserSegmentForResponse struct {
+	ID   int    `json:"user-id"`
+	Name string `json:"segment-names"`
 }
 
 func main() {
@@ -49,7 +56,7 @@ func main() {
 	}
 
 	//create table User_segments
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS user_segments (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users (id), segment_id INTEGER REFERENCES segments (id))")
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS user_segments (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users (id) ON DELETE CASCADE, segment_id INTEGER REFERENCES segments (id) ON DELETE CASCADE)")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -90,10 +97,10 @@ func createSegment(db *sql.DB) http.HandlerFunc {
 		var segment Segment
 		json.NewDecoder(r.Body).Decode(&segment)
 
-		err := db.QueryRow("INSERT INTO segments (name) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id", segment.Name).Scan(&segment.ID)
+		_, err := db.Exec("INSERT INTO segments (name) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id", segment.Name)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode("This segment already exist")
+			json.NewEncoder(w).Encode(fmt.Sprintf("Segment '%s' already exist!", segment.Name))
 			return
 		}
 		json.NewEncoder(w).Encode(segment)
@@ -106,21 +113,22 @@ func deleteSegment(db *sql.DB) http.HandlerFunc {
 		var segment Segment
 		json.NewDecoder(r.Body).Decode(&segment)
 
-		_, err := db.Exec("SELECT * FROM segments WHERE name LIKE $1", segment.Name)
-		if err != nil {
-			fmt.Fprintln(os.Stdout, segment.Name)
-			fmt.Fprintln(os.Stdout, err)
-
+		err := db.QueryRow("SELECT name FROM segments WHERE name LIKE $1", segment.Name).Scan(&segment.Name)
+		if errors.Is(err, sql.ErrNoRows) {
 			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(segment.Name)
+			json.NewEncoder(w).Encode(fmt.Sprintf("Segment '%s' does not exist!", segment.Name))
+		} else if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode("ERROR")
 			return
 		} else {
 			_, err := db.Exec("DELETE FROM segments WHERE name LIKE $1", segment.Name)
 			if err != nil {
+				//FIX
 				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode("ERROR")
 				return
 			}
-
 			json.NewEncoder(w).Encode(fmt.Sprintf("Segment '%s' was deleted", segment.Name))
 		}
 	}
@@ -133,42 +141,52 @@ func createUsersSegments(db *sql.DB) http.HandlerFunc {
 		var userSegment UserSegments
 		json.NewDecoder(r.Body).Decode(&userSegment)
 
-		json.NewEncoder(w).Encode(fmt.Sprintf("First '%s' '%d'", userSegment.Segments, userSegment.UserID))
-
 		for _, segment := range userSegment.Segments {
 			json.NewEncoder(w).Encode(fmt.Sprintf("SEGMENT '%s' '%d'", segment, userSegment.UserID))
-			err := db.QueryRow("INSERT INTO user_segments (user_id, segment_id) SELECT $1, id FROM segments WHERE name LIKE $2", userSegment.UserID, segment).Scan(&userSegment.ID)
+			_, err := db.Exec("INSERT INTO user_segments (user_id, segment_id) SELECT $1, id FROM segments WHERE name LIKE $2", userSegment.UserID, segment)
 			if err != nil {
 				w.WriteHeader(http.StatusNotFound)
 				json.NewEncoder(w).Encode(fmt.Sprintf("ERROR '%s' '%d'", userSegment.Segments, userSegment.UserID))
 				return
 			}
 		}
-		json.NewEncoder(w).Encode(userSegment)
+		json.NewEncoder(w).Encode(fmt.Sprintf("Segments '%s' was added to user '%d'", userSegment.Segments, userSegment.UserID))
+
+		for _, segmentDel := range userSegment.SegmentsForDelete {
+			_, err := db.Exec("DELETE FROM user_segments WHERE user_id = $1 AND segment_id IN (SELECT id FROM segments WHERE name LIKE $2)", userSegment.UserID, segmentDel)
+			if err != nil {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(fmt.Sprintf("ERROR '%s' '%d'", userSegment.Segments, userSegment.UserID))
+				return
+			}
+		}
+		json.NewEncoder(w).Encode(fmt.Sprintf("Segments '%s' was deleted to user '%d'", userSegment.SegmentsForDelete, userSegment.UserID))
+
 	}
 }
 
-// get all segments of users
+// get all segments of users (ALMOST DONE)
 func getUsersSegments(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query("SELECT user_segments.user_id AS ID, segments.name AS name FROM user_segments INNER JOIN segments ON segments.id = user_segments.segment_id")
+		rows, err := db.Query("SELECT user_segments.user_id AS ID, STRING_AGG(COALESCE(segments.name,''), ',') AS name FROM user_segments LEFT JOIN segments ON segments.id = user_segments.segment_id GROUP BY user_segments.user_id")
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer rows.Close()
 
-		users := []User{}
+		userSegmentsResponse := []UserSegmentForResponse{}
 		for rows.Next() {
-			var u User
+			var u UserSegmentForResponse
 			if err := rows.Scan(&u.ID, &u.Name); err != nil {
 				log.Fatal(err)
 			}
-			users = append(users, u)
+			userSegmentsResponse = append(userSegmentsResponse, u)
 		}
+
 		if err := rows.Err(); err != nil {
 			log.Fatal(err)
 		}
-		json.NewEncoder(w).Encode(users)
+		json.NewEncoder(w).Encode(userSegmentsResponse)
 	}
 }
 
@@ -176,10 +194,10 @@ func getUsersSegments(db *sql.DB) http.HandlerFunc {
 func getUserSegments(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
-		id := vars["id"]
+		id := vars["user-id"]
 
-		var u User
-		err := db.QueryRow("SELECT user_segments.user_id AS ID, segments.name AS name FROM user_segments INNER JOIN segments ON segments.id = user_segments.segment_id WHERE user_segments.user_id = $1", id).Scan(&u.ID, &u.Name)
+		var u UserSegmentForResponse
+		err := db.QueryRow("SELECT user_segments.user_id AS ID, STRING_AGG(segments.name, ',') AS name FROM user_segments INNER JOIN segments ON segments.id = user_segments.segment_id WHERE user_segments.user_id = $1 GROUP BY user_segments.user_id", id).Scan(&u.ID, &u.Name)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
