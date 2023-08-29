@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 )
 
 type User struct {
@@ -39,6 +41,18 @@ type ApiResponse struct {
 	Message string `json:"message"`
 }
 
+type HistoryReport struct {
+	UserID      int
+	SegmentName string
+	Action      string
+	DateTime    string
+}
+
+type ReportRequest struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
+}
+
 func main() {
 	//connection to DB
 	db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
@@ -66,6 +80,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	//create table History
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS history (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users (id), segment_id INTEGER REFERENCES segments (id), action TEXT, created_at TIMESTAMP WITH TIME ZONE)")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	//create router
 	router := mux.NewRouter()
 	//user api
@@ -76,12 +96,15 @@ func main() {
 	//segment api
 	//router.HandleFunc("/segments", getSegments(db)).Methods("GET")
 	router.HandleFunc("/segments", createSegment(db)).Methods("POST")
-	router.HandleFunc("/segments", deleteSegment(db)).Methods("DELETE")
+	router.HandleFunc("/segments/{segment-name}", deleteSegment(db)).Methods("DELETE")
 
 	//user_segment api
 	router.HandleFunc("/user-segments", getUsersSegments(db)).Methods("GET")
 	router.HandleFunc("/user-segments", createUsersSegments(db)).Methods("POST")
 	router.HandleFunc("/user-segments/{user-id}", getUserSegments(db)).Methods("GET")
+
+	//get CSV report
+	router.HandleFunc("/csv-report", getCsvReport(db)).Methods("GET")
 
 	//start server
 	log.Fatal(http.ListenAndServe(":8000", jsonContentTypeMiddleware(router)))
@@ -92,6 +115,76 @@ func jsonContentTypeMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Api response constructor
+func apiResponseConstructor(status string, message string) ApiResponse {
+	var apiResponse ApiResponse
+	apiResponse.Status = status
+	apiResponse.Message = message
+	return apiResponse
+}
+
+// Report API
+func getCsvReport(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var reportRequest ReportRequest
+		json.NewDecoder(r.Body).Decode(&reportRequest)
+
+		rows, err := db.Query("SELECT history.user_id, segments.name, history.action, history.created_at FROM history INNER JOIN segments ON segments.id = history.segment_id WHERE EXTRACT(year FROM history.created_at) = $1 AND EXTRACT(month FROM history.created_at) = $2", reportRequest.Year, reportRequest.Month)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		defer rows.Close()
+
+		file, err := os.Create(fmt.Sprintf("report-%d-%d.csv", reportRequest.Year, reportRequest.Month))
+		defer file.Close()
+		if err != nil {
+			log.Fatalln("failed to create/open file", err)
+		}
+
+		writer := csv.NewWriter(file)
+		defer writer.Flush()
+
+		row := []string{"User", "Action", "Segment", "Date"}
+		if err := writer.Write(row); err != nil {
+			log.Fatalln("error writing record to file", err)
+		}
+
+		for rows.Next() {
+			var report HistoryReport
+
+			if err := rows.Scan(&report.UserID, &report.SegmentName, &report.Action, &report.DateTime); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
+				return
+			}
+
+			row := []string{strconv.Itoa(report.UserID), report.Action, report.SegmentName, report.DateTime}
+			if err := writer.Write(row); err != nil {
+				log.Fatalln("error writing record to file", err)
+			}
+		}
+
+		if err := rows.Err(); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		w.Write([]byte(""))
+
+		//todo: вернуть ссылку
+		//json.NewEncoder(w).Encode(file.Name())
+	}
 }
 
 // SEGMENTS API
@@ -106,22 +199,19 @@ func createSegment(db *sql.DB) http.HandlerFunc {
 		if errors.Is(err, sql.ErrNoRows) {
 			_, err := db.Exec("INSERT INTO segments (name) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id", segment.Name)
 			if err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = "Something went wrong!"
-				json.NewEncoder(w).Encode(apiResponse)
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
 				return
 			}
-			var apiResponse ApiResponse
-			apiResponse.Status = "success"
-			apiResponse.Message = fmt.Sprintf("Segment '%s' was added", segment.Name)
-			json.NewEncoder(w).Encode(apiResponse)
+			w.WriteHeader(http.StatusCreated)
+			response := apiResponseConstructor("success", fmt.Sprintf("Segment '%s' was added", segment.Name))
+			json.NewEncoder(w).Encode(response)
+			return
 		} else {
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = fmt.Sprintf("Segment '%s' already exist!", segment.Name)
-			json.NewEncoder(w).Encode(apiResponse)
+			response := apiResponseConstructor("error", fmt.Sprintf("Segment '%s' already exist!", segment.Name))
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 	}
@@ -130,30 +220,28 @@ func createSegment(db *sql.DB) http.HandlerFunc {
 // delete Segment (DONE)
 func deleteSegment(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var segment Segment
-		json.NewDecoder(r.Body).Decode(&segment)
+		vars := mux.Vars(r)
+		name := vars["segment-name"]
 
-		err := db.QueryRow("SELECT name FROM segments WHERE name LIKE $1", segment.Name).Scan(&segment.Name)
+		var segment Segment
+
+		err := db.QueryRow("SELECT name FROM segments WHERE name LIKE $1", name).Scan(&segment.Name)
 
 		if errors.Is(err, sql.ErrNoRows) {
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = fmt.Sprintf("Segment '%s' does not exist!", segment.Name)
-			json.NewEncoder(w).Encode(apiResponse)
+			w.WriteHeader(http.StatusNotFound)
+			response := apiResponseConstructor("error", fmt.Sprintf("Segment '%s' does not exist!", name))
+			json.NewEncoder(w).Encode(response)
 		} else {
-			_, err := db.Exec("DELETE FROM segments WHERE name LIKE $1", segment.Name)
+			_, err := db.Exec("DELETE FROM segments WHERE name LIKE $1", name)
 			if err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = "Something went wrong!"
-				json.NewEncoder(w).Encode(apiResponse)
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
 				return
 			}
-			var apiResponse ApiResponse
-			apiResponse.Status = "success"
-			apiResponse.Message = fmt.Sprintf("Segment '%s' was deleted!", segment.Name)
-			json.NewEncoder(w).Encode(apiResponse)
+			response := apiResponseConstructor("success", fmt.Sprintf("Segment '%s' was deleted!", segment.Name))
+			json.NewEncoder(w).Encode(response)
 		}
 	}
 }
@@ -164,12 +252,10 @@ func getUsers(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query("SELECT * FROM users")
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = "Something went wrong!"
-			json.NewEncoder(w).Encode(apiResponse)
-			log.Fatal(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 		defer rows.Close()
@@ -178,23 +264,19 @@ func getUsers(db *sql.DB) http.HandlerFunc {
 		for rows.Next() {
 			var u User
 			if err := rows.Scan(&u.ID, &u.Name); err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = "Something went wrong!"
-				json.NewEncoder(w).Encode(apiResponse)
-				log.Fatal(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
 				return
 			}
 			users = append(users, u)
 		}
 		if err := rows.Err(); err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = "Something went wrong!"
-			json.NewEncoder(w).Encode(apiResponse)
-			log.Fatal(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 		json.NewEncoder(w).Encode(users)
@@ -209,18 +291,14 @@ func createUser(db *sql.DB) http.HandlerFunc {
 
 		err := db.QueryRow("INSERT INTO users (name) VALUES ($1) RETURNING id", u.Name).Scan(&u.ID)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = "Something went wrong!"
-			json.NewEncoder(w).Encode(apiResponse)
-			log.Fatal(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
 			return
 		}
-		var apiResponse ApiResponse
-		apiResponse.Status = "success"
-		apiResponse.Message = fmt.Sprintf("User '%s' was added!", u.Name)
-		json.NewEncoder(w).Encode(apiResponse)
+		response := apiResponseConstructor("success", fmt.Sprintf("User '%s' was added!", u.Name))
+		json.NewEncoder(w).Encode(response)
 	}
 }
 
@@ -235,24 +313,20 @@ func deleteUser(db *sql.DB) http.HandlerFunc {
 		err := db.QueryRow("SELECT id FROM users WHERE id = $1", id).Scan(&u.ID)
 
 		if errors.Is(err, sql.ErrNoRows) {
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = fmt.Sprintf("User '%s' does not exist!", id)
-			json.NewEncoder(w).Encode(apiResponse)
+			w.WriteHeader(http.StatusNotFound)
+			response := apiResponseConstructor("error", fmt.Sprintf("User '%s' does not exist!", id))
+			json.NewEncoder(w).Encode(response)
 		} else {
 			_, err := db.Exec("DELETE FROM users WHERE id = $1", id)
 			if err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = "Something went wrong!"
-				json.NewEncoder(w).Encode(apiResponse)
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
 				return
 			}
-			var apiResponse ApiResponse
-			apiResponse.Status = "success"
-			apiResponse.Message = fmt.Sprintf("User '%d' was deleted!", u.ID)
-			json.NewEncoder(w).Encode(apiResponse)
+			response := apiResponseConstructor("success", fmt.Sprintf("User '%d' was deleted!", u.ID))
+			json.NewEncoder(w).Encode(response)
 		}
 	}
 }
@@ -264,12 +338,13 @@ func createUsersSegments(db *sql.DB) http.HandlerFunc {
 		var userSegment UserSegments
 		json.NewDecoder(r.Body).Decode(&userSegment)
 
+		responses := []ApiResponse{}
+
 		errUser := db.QueryRow("SELECT id FROM users WHERE id = $1", userSegment.UserID).Scan(&userSegment.UserID)
 		if errors.Is(errUser, sql.ErrNoRows) {
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = fmt.Sprintf("User '%d' does not exist!", userSegment.UserID)
-			json.NewEncoder(w).Encode(apiResponse)
+			w.WriteHeader(http.StatusNotFound)
+			response := apiResponseConstructor("error", fmt.Sprintf("User '%d' does not exist!", userSegment.UserID))
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 
@@ -279,10 +354,8 @@ func createUsersSegments(db *sql.DB) http.HandlerFunc {
 			errSegment := db.QueryRow("SELECT name FROM segments WHERE name LIKE $1", segment).Scan(&segment)
 
 			if errors.Is(errSegment, sql.ErrNoRows) {
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = fmt.Sprintf("Segment '%s' does not exist!", segment)
-				json.NewEncoder(w).Encode(apiResponse)
+				response := apiResponseConstructor("error", fmt.Sprintf("Segment '%s' does not exist!", segment))
+				responses = append(responses, response)
 				continue
 			}
 
@@ -291,23 +364,25 @@ func createUsersSegments(db *sql.DB) http.HandlerFunc {
 			if errors.Is(err, sql.ErrNoRows) {
 				_, err := db.Exec("INSERT INTO user_segments (user_id, segment_id) SELECT $1, id FROM segments WHERE name LIKE $2", userSegment.UserID, segment)
 				if err != nil {
-					w.WriteHeader(http.StatusNotFound)
-					var apiResponse ApiResponse
-					apiResponse.Status = "error"
-					apiResponse.Message = "Something went wrong!"
-					json.NewEncoder(w).Encode(apiResponse)
+					w.WriteHeader(http.StatusInternalServerError)
+					response := apiResponseConstructor("error", "Something went wrong!")
+					log.Println(err)
+					json.NewEncoder(w).Encode(response)
 					return
 				}
-				var apiResponse ApiResponse
-				apiResponse.Status = "success"
-				apiResponse.Message = fmt.Sprintf("Segment '%s' for user '%d' was added", segment, userSegment.UserID)
-				json.NewEncoder(w).Encode(apiResponse)
+
+				_, errHistory := db.Exec("INSERT INTO history (user_id, segment_id, action, created_at) SELECT $1, id, 'add', NOW() FROM segments WHERE name LIKE $2", userSegment.UserID, segment)
+				if errHistory != nil {
+					log.Println(err)
+					continue
+				}
+
+				response := apiResponseConstructor("success", fmt.Sprintf("Segment '%s' for user '%d' was added", segment, userSegment.UserID))
+				responses = append(responses, response)
 				continue
 			} else {
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = fmt.Sprintf("Segment '%s' for user '%d' already exist!", segment, userSegment.UserID)
-				json.NewEncoder(w).Encode(apiResponse)
+				response := apiResponseConstructor("error", fmt.Sprintf("Segment '%s' for user '%d' already exist!", segment, userSegment.UserID))
+				responses = append(responses, response)
 				continue
 			}
 
@@ -318,38 +393,39 @@ func createUsersSegments(db *sql.DB) http.HandlerFunc {
 			errSegment := db.QueryRow("SELECT name FROM segments WHERE name LIKE $1", segmentDel).Scan(&segmentDel)
 
 			if errors.Is(errSegment, sql.ErrNoRows) {
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = fmt.Sprintf("Segment '%s' does not exist!", segmentDel)
-				json.NewEncoder(w).Encode(apiResponse)
+				response := apiResponseConstructor("error", fmt.Sprintf("Segment '%s' does not exist!", segmentDel))
+				responses = append(responses, response)
 				continue
 			}
 
 			err := db.QueryRow("SELECT user_id FROM user_segments WHERE user_id = $1 AND segment_id IN (SELECT id FROM segments WHERE name LIKE $2)", userSegment.UserID, segmentDel).Scan(&userSegment.UserID)
 
 			if errors.Is(err, sql.ErrNoRows) {
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = fmt.Sprintf("Thete is not segment '%s' for user '%d'", segmentDel, userSegment.UserID)
-				json.NewEncoder(w).Encode(apiResponse)
+				response := apiResponseConstructor("error", fmt.Sprintf("Thete is not segment '%s' for user '%d'", segmentDel, userSegment.UserID))
+				responses = append(responses, response)
 				continue
 			} else {
 				_, err := db.Exec("DELETE FROM user_segments WHERE user_id = $1 AND segment_id IN (SELECT id FROM segments WHERE name LIKE $2)", userSegment.UserID, segmentDel)
 				if err != nil {
-					w.WriteHeader(http.StatusNotFound)
-					var apiResponse ApiResponse
-					apiResponse.Status = "error"
-					apiResponse.Message = "Something went wrong!"
-					json.NewEncoder(w).Encode(apiResponse)
+					w.WriteHeader(http.StatusInternalServerError)
+					response := apiResponseConstructor("error", "Something went wrong!")
+					log.Println(err)
+					json.NewEncoder(w).Encode(response)
 					return
 				}
-				var apiResponse ApiResponse
-				apiResponse.Status = "success"
-				apiResponse.Message = fmt.Sprintf("Segment '%s' for user '%d' was deleted", segmentDel, userSegment.UserID)
-				json.NewEncoder(w).Encode(apiResponse)
+
+				_, errHistory := db.Exec("INSERT INTO history (user_id, segment_id, action, created_at) SELECT $1, id, 'del', NOW() FROM segments WHERE name LIKE $2", userSegment.UserID, segmentDel)
+				if errHistory != nil {
+					log.Println(err)
+					continue
+				}
+
+				response := apiResponseConstructor("success", fmt.Sprintf("Segment '%s' for user '%d' was deleted", segmentDel, userSegment.UserID))
+				responses = append(responses, response)
 				continue
 			}
 		}
+		json.NewEncoder(w).Encode(responses)
 	}
 }
 
@@ -358,12 +434,10 @@ func getUsersSegments(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query("SELECT user_segments.user_id AS ID, STRING_AGG(COALESCE(segments.name,''), ',') AS name FROM user_segments LEFT JOIN segments ON segments.id = user_segments.segment_id GROUP BY user_segments.user_id")
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = "Something went wrong!"
-			json.NewEncoder(w).Encode(apiResponse)
-			log.Fatal(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 		defer rows.Close()
@@ -372,24 +446,20 @@ func getUsersSegments(db *sql.DB) http.HandlerFunc {
 		for rows.Next() {
 			var u UserSegmentForResponse
 			if err := rows.Scan(&u.ID, &u.Name); err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = "Something went wrong!"
-				json.NewEncoder(w).Encode(apiResponse)
-				log.Fatal(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
 				return
 			}
 			userSegmentsResponse = append(userSegmentsResponse, u)
 		}
 
 		if err := rows.Err(); err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = "Something went wrong!"
-			json.NewEncoder(w).Encode(apiResponse)
-			log.Fatal(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			response := apiResponseConstructor("error", "Something went wrong!")
+			log.Println(err)
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 		json.NewEncoder(w).Encode(userSegmentsResponse)
@@ -407,17 +477,15 @@ func getUserSegments(db *sql.DB) http.HandlerFunc {
 		err := db.QueryRow("SELECT user_segments.user_id AS ID, STRING_AGG(segments.name, ',') AS name FROM user_segments INNER JOIN segments ON segments.id = user_segments.segment_id WHERE user_segments.user_id = $1 GROUP BY user_segments.user_id", id).Scan(&u.ID, &u.Name)
 
 		if errors.Is(err, sql.ErrNoRows) {
-			var apiResponse ApiResponse
-			apiResponse.Status = "error"
-			apiResponse.Message = fmt.Sprintf("Segments for user '%s' does not exist!", id)
-			json.NewEncoder(w).Encode(apiResponse)
+			w.WriteHeader(http.StatusNotFound)
+			response := apiResponseConstructor("error", fmt.Sprintf("Segments for user '%s' does not exist!", id))
+			json.NewEncoder(w).Encode(response)
 		} else {
 			if err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				var apiResponse ApiResponse
-				apiResponse.Status = "error"
-				apiResponse.Message = "Something went wrong!"
-				json.NewEncoder(w).Encode(apiResponse)
+				w.WriteHeader(http.StatusInternalServerError)
+				response := apiResponseConstructor("error", "Something went wrong!")
+				log.Println(err)
+				json.NewEncoder(w).Encode(response)
 				return
 			}
 			json.NewEncoder(w).Encode(u)
