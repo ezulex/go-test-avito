@@ -229,6 +229,7 @@ func deleteSegment(db *sql.DB) http.HandlerFunc {
 			w.WriteHeader(http.StatusNotFound)
 			response := apiResponseConstructor("error", fmt.Sprintf("Segment '%s' does not exist!", name))
 			json.NewEncoder(w).Encode(response)
+			return
 		} else {
 			_, err := db.Exec("DELETE FROM segments WHERE name LIKE $1", name)
 			if err != nil {
@@ -314,6 +315,7 @@ func deleteUser(db *sql.DB) http.HandlerFunc {
 			w.WriteHeader(http.StatusNotFound)
 			response := apiResponseConstructor("error", fmt.Sprintf("User '%s' does not exist!", id))
 			json.NewEncoder(w).Encode(response)
+			return
 		} else {
 			_, err := db.Exec("DELETE FROM users WHERE id = $1", id)
 			if err != nil {
@@ -485,6 +487,7 @@ func getUserSegments(db *sql.DB) http.HandlerFunc {
 		if errors.Is(err, sql.ErrNoRows) {
 			response := apiResponseConstructor("success", fmt.Sprintf("Segments for user '%s' does not exist!", id))
 			json.NewEncoder(w).Encode(response)
+			return
 		} else {
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
