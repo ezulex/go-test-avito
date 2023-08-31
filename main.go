@@ -104,7 +104,7 @@ func main() {
 	router.HandleFunc("/user-segments/{user-id}", getUserSegments(db)).Methods("GET")
 
 	//get CSV report
-	router.HandleFunc("/csv-report", getCsvReport(db)).Methods("GET")
+	router.HandleFunc("/csv-report", getCsvReport(db)).Methods("POST")
 
 	//start server
 	log.Fatal(http.ListenAndServe(":8000", jsonContentTypeMiddleware(router)))
@@ -180,10 +180,8 @@ func getCsvReport(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		w.Write([]byte(""))
-
-		//todo: вернуть ссылку
-		//json.NewEncoder(w).Encode(file.Name())
+		response := apiResponseConstructor("success", file.Name())
+		json.NewEncoder(w).Encode(response)
 	}
 }
 
@@ -474,11 +472,18 @@ func getUserSegments(db *sql.DB) http.HandlerFunc {
 
 		var u UserSegmentForResponse
 
+		errUser := db.QueryRow("SELECT id FROM users WHERE id = $1", id).Scan(&id)
+		if errors.Is(errUser, sql.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			response := apiResponseConstructor("error", fmt.Sprintf("User '%s' does not exist!", id))
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
 		err := db.QueryRow("SELECT user_segments.user_id AS ID, STRING_AGG(segments.name, ',') AS name FROM user_segments INNER JOIN segments ON segments.id = user_segments.segment_id WHERE user_segments.user_id = $1 GROUP BY user_segments.user_id", id).Scan(&u.ID, &u.Name)
 
 		if errors.Is(err, sql.ErrNoRows) {
-			w.WriteHeader(http.StatusNotFound)
-			response := apiResponseConstructor("error", fmt.Sprintf("Segments for user '%s' does not exist!", id))
+			response := apiResponseConstructor("success", fmt.Sprintf("Segments for user '%s' does not exist!", id))
 			json.NewEncoder(w).Encode(response)
 		} else {
 			if err != nil {

@@ -1,0 +1,445 @@
+openapi: 3.0.3
+info:
+  title: User segments API
+  description: API cервиса динамического сегментирования пользователей
+  contact:
+    email: developer@developer.dd
+  version: 1.0.0
+externalDocs:
+  description: README
+  url: https://github.com/ezulex/go-test-avito/blob/master/readme.md
+servers:
+  - url: http://localhost:8000
+tags:
+  - name: segments
+    description: Добавление и удаление сегментов
+  - name: users
+    description: Получение, добавление и удаление пользователей
+  - name: user-segments
+    description: Получение, добавление и удаление сегментов для пользователя
+  - name: csv-report
+    description: Получение отчёта изменений сегментов у пользователей
+paths:
+  /segments:
+    post:
+      tags:
+        - segments
+      summary: Добавление сегмента
+      description: Имя сегмента уникально
+      operationId: createSegment
+      requestBody:
+        description: Добавление сегмента
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Segments'
+      responses:
+        '201':
+          description: Сегмент добавлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostSegments201'
+        '200':
+          description: Сегмент уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostSegments200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+  /segments/{segment-name}:
+    delete:
+      tags:
+        - segments
+      summary: Удаление сегмента
+      description: Удаление сегмента
+      operationId: deleteSegment
+      parameters:
+        - name: segment-name
+          in: path
+          description: Имя сегмента
+          required: true
+          schema:
+            type: string
+      responses:
+        '404':
+          description: Сегмент не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteSegments404'
+        '200':
+          description: Сегмент удалён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteSegments200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+  /users:
+    post:
+      tags:
+        - users
+      summary: Добавление пользователя
+      description: Добавление пользователя
+      operationId: createUser
+      requestBody:
+        description: Добавление пользователя
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Users'
+      responses:
+        '201':
+          description: Сегмент добавлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostUsers201'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+    get:
+      tags:
+        - users
+      summary: Получение списка пользователей
+      description: Получение списка пользователей
+      operationId: getUsers
+      responses:
+        '200':
+          description: Список получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetUsers200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+  /users/{user-id}:
+    delete:
+      tags:
+        - users
+      summary: Удаление пользователя
+      description: Удаление пользователя
+      operationId: deleteUser
+      parameters:
+        - name: user-id
+          in: path
+          description: ID пользователя
+          required: true
+          schema:
+            type: integer
+      responses:
+        '404':
+          description: Сегмент не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteUsers404'
+        '200':
+          description: Сегмент удалён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteUsers200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+  /user-segments/{user-id}:
+    get:
+      tags:
+        - user-segments
+      summary: Получение сегментов пользователя
+      description: Получение сегментов пользователя
+      operationId: getUserSegments
+      parameters:
+        - name: user-id
+          in: path
+          description: ID пользователя
+          required: true
+          schema:
+            type: integer
+      responses:
+        '404':
+          description: Пользователя не существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetUserSegments404'
+        '200':
+          description: Список сегментов пользователя получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetUserSegments200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+  /user-segments:
+    get:
+      tags:
+        - user-segments
+      summary: Получение сегментов пользователей
+      description: Получение сегментов пользователей
+      operationId: getUsersSegments
+      responses:
+        '200':
+          description: Список сегментов пользователей получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetUsersSegments200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+    post:
+      tags:
+        - user-segments
+      summary: Добавление и удаление сегментов пользователя
+      description: Добавление и удаление сегментов пользователя
+      operationId: createUsersSegments
+      requestBody:
+        description: Добавление и удаление сегментов пользователя
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserSegments'
+      responses:
+        '404':
+          description: Пользователя, сегмента или сегмента у пользователя не существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostUsersSegments404'
+        '200':
+          description: Список сегментов пользователя получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostUsersSegments200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+  /csv-report:
+    post:
+      tags:
+        - csv-report
+      summary: CSV с историей изменений
+      description: CSV с историей изменений за выбранный месяц
+      operationId: PostCsvReport
+      requestBody:
+        description: Запрос отчёта
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCsvReport'
+      responses:
+        '200':
+          description: Список сегментов пользователей получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostCsvReport200'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response500'
+components:
+  schemas:
+    Segments:
+      type: object
+      properties:
+        name:
+          type: string
+          example: AVITO_01
+    PostSegments201:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: Segment 'AVITO_01' was added
+    Response500:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: Something went wrong!
+    PostSegments200:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: Segment 'AVITO_01' already exist!
+    DeleteSegments404:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: Segment 'AVITO_03' does not exist!
+    DeleteSegments200:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: Segment 'AVITO_02' was deleted!
+    GetUsers200:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 3
+        name:
+          type: string
+          example: Masha
+    PostUsers201:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: User 'Masha' was added!
+    Users:
+      type: object
+      properties:
+        name:
+          type: string
+          example: Masha
+    DeleteUsers404:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: User '34' does not exist!
+    DeleteUsers200:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: User '3' was deleted!
+    GetUsersSegments200:
+      type: object
+      properties:
+        user-id:
+          type: integer
+          example: 6
+        segment-names:
+          type: string
+          example: AVITO_01,AVITO_010
+    GetUserSegments404:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: User '4' does not exist!
+    GetUserSegments200:
+      type: object
+      properties:
+        user-id:
+          type: integer
+          example: 6
+        segment-names:
+          type: string
+          example: AVITO_01,AVITO_010
+    CreateUserSegments:
+      type: object
+      properties:
+        user-id:
+          type: integer
+          example: 6
+        segments:
+          type: object
+          example: ["AVITO_01", "AVITO_02", "AVITO_02"]
+        segments-for-delete:
+          type: object
+          example: ["AVITO_013", "AVITO_010", "AVITO_011"]
+    PostUsersSegments404:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: User '4' does not exist!
+    PostUsersSegments200:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: Segment 'AVITO_010' for user '6' was deleted
+    PostCsvReport:
+      type: object
+      properties:
+        year:
+          type: integer
+          example: 2023
+        month:
+          type: integer
+          example: 6
+    PostCsvReport200:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: report-2023-6.csv
