@@ -63,7 +63,7 @@
 `}]`
 
 Документацию по всем запросам можно посмотреть в Swagger, для этого:
-1. Скачать [Swagger-файл](https://github.com/ezulex/go-test-avito/swaggerApi.yaml)
+1. Скачать [Swagger-файл](https://github.com/ezulex/go-test-avito/blob/master/swaggerApi.yaml)
 2. Ввести содержимое в https://editor.swagger.io
 
 ### Комментарии:
